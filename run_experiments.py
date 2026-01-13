@@ -16,33 +16,33 @@ DOMAINS = [
 
 # Task 1: Text-to-Text Retrieval
 TASK1_MODELS = [
-    "sbert", "bge", 
-    "inst-l", "inst-xl", "grit", "diver-retriever", "contriever", "reasonir", "m2", 
-    "rader", "nomic"
+    # "sbert", "bge", 
+    # "inst-l", "inst-xl", "grit", "diver-retriever", "contriever", "reasonir", "m2", 
+    # "rader", "nomic"
     # "cohere", "voyage", "openai",  "bm25","sf", "qwen", "qwen2", "e5",
     #"google",
 ]
 
 # Task 2: Multimodal-to-Text Retrieval
 # (Queries have images, documents are text)
+#
 TASK2_MODELS = [
-    "nomic-vision", "llava-1.5", "llava-1.6", "bge-vl-large", "bge-vl-base",
-    "gme-qwen2-vl-2b", "gme-qwen2-vl-7b", "nvidia-mm-embed", "seed-multimodal",
-    # Text-only baselines or specific variants often included:
-    "clip", "siglip", "jina-clip"
+    
+    # "bge-vl-large", "bge-vl-base", "nomic-vision",  "clip" , "siglip",    "jina-clip" , "gme-qwen2-vl-2b", "gme-qwen2-vl-7b", 
+
 ]
 
 # Task 3: Text-to-Image Retrieval
 # (Query is text+image (or just text), target is image)
-TASK3_MODELS = [
-    "clip", "siglip", "jina-clip", "nomic-vision", 
+TASK3_MODELS = [ #"clip",  "siglip",
+    # "jina-clip", "nomic-vision", 
     "bge-vl-large", "gme-qwen2-vl-2b", "gme-qwen2-vl-7b"
 ]
 
 # Task 4: Multimodal-to-Multimodal (IT -> IT)
 TASK4_MODELS = [
-    "clip", "siglip", "jina-clip", "bge-vl-large", 
-    "gme-qwen2-vl-2b", "gme-qwen2-vl-7b", "nomic-vision"
+    # "clip", "siglip", "jina-clip", "bge-vl-large", 
+    # "gme-qwen2-vl-2b", "gme-qwen2-vl-7b", "nomic-vision"
 ]
 
 # ==================== SCRIPT ====================

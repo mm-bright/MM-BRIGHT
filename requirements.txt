@@ -1,0 +1,5 @@
+transformers==4.51.3
+tokenizers==0.21.4
+peft==0.15.2
+timm
+#pip install -U "peft<0.16.0"

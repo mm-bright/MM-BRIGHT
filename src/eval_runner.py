@@ -132,34 +132,53 @@ class EvaluationRunner:
             # Let's enable images if available.
             
         elif self.task_type == 'multimodal_text':
-            # Task 2
+            # Task 2: Multimodal Query (text + image) -> Text Documents
             # Load Corpus (Text)
             doc_ids, documents = loader.load_corpus_texts(domain)
             if not documents: return None
             
             # Load Queries (Multimodal - has text and image_paths)
-            queries, query_ids, gold_ids_map, excluded_ids, query_images_map = loader.load_queries(domain, "examples_multimodal")
+            queries, query_ids, gold_ids_map, excluded_ids, query_images_map, _, _ = loader.load_queries(domain, "examples_multimodal")
+            
+            # Load query images from HF (bytes -> PIL)
+            query_images_data = loader.load_query_images(domain)
+            # Resolve paths to PIL images
+            query_pil_images = loader.get_query_pil_images(query_images_map, query_images_data)
 
         elif self.task_type == 'text_image':
-            # Task 3
+            # Task 3: Multimodal Query -> Image Retrieval
             # Load Queries with images
-            queries, query_ids, gold_ids_map, excluded_ids, query_images_map = loader.load_queries(domain, "examples_multimodal")
+            queries, query_ids, gold_ids_map, excluded_ids, query_images_map, positive_images_map, negative_images_map = loader.load_queries(domain, "examples_multimodal")
             
-            # Load Image Corpus
-            img_ids, img_paths = loader.load_image_corpus_paths(domain, Path(args.dataset_dir) / "passage_images")
-            if not img_paths: return None
+            # Load query images from HF
+            query_images_data = loader.load_query_images(domain)
+            query_pil_images = loader.get_query_pil_images(query_images_map, query_images_data)
+            
+            # Load Corpus Images from HF (bytes -> PIL)
+            corpus_images_map = loader.load_corpus_images(domain)
+            if not corpus_images_map: return None
             
             # doc_ids/documents become image paths for the retriever
-            doc_ids = img_ids
-            documents = img_paths
+            doc_ids = list(corpus_images_map.keys())
+            documents = list(corpus_images_map.values())  # PIL Images
 
         elif self.task_type == 'text_pair':
-             # Task 4
-             # Load Corpus & Images & Build Pairs
-             p_doc_ids, p_docs = loader.load_corpus_texts(domain)
-             doc_ids, documents, doc_images, _, _ = loader.build_it_it_pairs(p_doc_ids, p_docs, Path(args.dataset_dir) / "passage_images", domain)
+            # Task 4: Multimodal Query -> Multimodal Document (IT -> IT)
+            # Load Corpus text
+            p_doc_ids, p_docs = loader.load_corpus_texts(domain)
+            
+            # Load Corpus Images from HF
+            corpus_images_map = loader.load_corpus_images(domain)
+            
+            # Build pairs (text, image)
+            doc_ids, documents, doc_images, _ = loader.build_it_it_pairs(p_doc_ids, p_docs, corpus_images_map, domain)
              
-             queries, query_ids, gold_ids_map, excluded_ids, query_images_map = loader.load_queries(domain, "examples_multimodal")
+            # Load Queries
+            queries, query_ids, gold_ids_map, excluded_ids, query_images_map, _, _ = loader.load_queries(domain, "examples_multimodal")
+            
+            # Load query images from HF
+            query_images_data = loader.load_query_images(domain)
+            query_pil_images = loader.get_query_pil_images(query_images_map, query_images_data)
 
         if not queries: return None
         
@@ -201,7 +220,9 @@ class EvaluationRunner:
             # Add extras
             if args.model_name: run_kwargs['model_name'] = args.model_name
             if self.task_type == 'text_pair': run_kwargs['doc_images'] = doc_images
-            if 'query_images_map' in locals(): run_kwargs['query_images_map'] = query_images_map
+            # Pass PIL images for multimodal tasks
+            if 'query_pil_images' in locals() and query_pil_images: 
+                run_kwargs['query_images_map'] = query_pil_images  # dict[qid] -> list[PIL.Image]
             
             scores = self.retriever_funcs[args.model](**run_kwargs)
             
@@ -219,14 +240,37 @@ class EvaluationRunner:
         qrels = {}
         for qid in query_ids:
             qrels[str(qid)] = {}
-            # Prefer gold_ids if T1/2
+            # Prefer gold_ids if T1/2/4
             if self.task_type in ['text_text', 'multimodal_text', 'text_pair']:
                 for gid in gold_ids_map.get(qid, []):
                     qrels[str(qid)][str(gid)] = 1 
-            else: # T3 - uses positive images (query_images_map contains query images, not relevant here)
-                 # For T3, gold_ids_map should still contain relevant document/image IDs
-                 for gid in gold_ids_map.get(qid, []):
-                     qrels[str(qid)][str(gid)] = 1
+            else: # T3 - uses positive_images (image IDs for image retrieval)
+                 # positive_images_map contains the correct image IDs for Task 3
+                 if 'positive_images_map' in locals() and positive_images_map:
+                     for gid in positive_images_map.get(qid, []):
+                         qrels[str(qid)][str(gid)] = 1
+                 else:
+                     # Fallback to gold_ids_map if positive_images not available
+                     for gid in gold_ids_map.get(qid, []):
+                         qrels[str(qid)][str(gid)] = 1
+        
+        # DEBUG: Check gold_ids matching
+        sample_qid = query_ids[0] if query_ids else None
+        if sample_qid:
+            # For Task 3, use positive_images_map for debug
+            if self.task_type == 'text_image' and 'positive_images_map' in locals() and positive_images_map:
+                sample_gold = positive_images_map.get(sample_qid, [])
+                print(f"[DEBUG] Sample query_id: {sample_qid}")
+                print(f"[DEBUG] Sample positive_images: {sample_gold[:5] if sample_gold else 'EMPTY'}")
+            else:
+                sample_gold = gold_ids_map.get(sample_qid, [])
+                print(f"[DEBUG] Sample query_id: {sample_qid}")
+                print(f"[DEBUG] Sample gold_ids: {sample_gold[:5] if sample_gold else 'EMPTY'}")
+            print(f"[DEBUG] Sample doc_ids: {doc_ids[:5] if doc_ids else 'EMPTY'}")
+            # Check if gold_ids overlap with doc_ids
+            doc_ids_set = set(str(d) for d in doc_ids)
+            gold_match = sum(1 for gid in sample_gold if str(gid) in doc_ids_set)
+            print(f"[DEBUG] Gold IDs matching doc_ids: {gold_match}/{len(sample_gold)}")
 
         # Calculate metrics
         from src.retrievers.task1_text import calculate_retrieval_metrics

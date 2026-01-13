@@ -80,31 +80,21 @@ def retrieval_clip(queries, query_ids, documents, doc_ids, task, model_id, instr
         batch_texts = []
         
         for qid, query_text in zip(batch_query_ids, batch_queries):
-            # Get image paths for this query
-            image_paths = query_images_map.get(qid, [])
+            # Get images for this query (now PIL.Image objects from HF)
+            images = query_images_map.get(qid, [])
             
-            if image_paths:
-                print(image_paths)
-                # Load first image (you can modify to handle multiple images)
-                img_path = "./" / image_dir / image_paths[0].split('/')[-1]
-                if img_path.exists():
-                    print("Reading Image to encoded it..............")
-                    try:
-                        image = Image.open(img_path).convert('RGB')
-                        batch_images.append(image)
-                        batch_texts.append(query_text)
-                    except:
-                        batch_images.append(Image.new('RGB', (224, 224), color='white'))
-                        batch_texts.append(query_text) 
+            if images:
+                first_img = images[0]
+                # Check if already PIL Image
+                if hasattr(first_img, 'convert'):
+                    batch_images.append(first_img.convert('RGB'))
                 else:
-                    # Fallback to text-only if image not found
-                    print(f"Warning: Image not found: {img_path}")
+                    # Fallback for unexpected type
                     batch_images.append(Image.new('RGB', (224, 224), color='white'))
-                    batch_texts.append(query_text)
             else:
                 # Text-only query (no image)
                 batch_images.append(Image.new('RGB', (224, 224), color='white'))
-                batch_texts.append(query_text)
+            batch_texts.append(query_text)
         
         # Process multimodal inputs
         inputs = processor(
@@ -195,16 +185,13 @@ def retrieval_siglip(queries, query_ids, documents, doc_ids, task, model_id, ins
         batch_texts = []
         
         for qid, query_text in zip(batch_query_ids, batch_queries):
-            image_paths = query_images_map.get(qid, [])
+            # Get images for this query (now PIL.Image objects from HF)
+            images = query_images_map.get(qid, [])
             
-            if image_paths:
-                img_path = "./" / image_dir / image_paths[0].split('/')[-1]
-                if img_path.exists():
-                    try:
-                        image = Image.open(img_path).convert('RGB')
-                        batch_images.append(image)
-                    except:
-                        batch_images.append(Image.new('RGB', (384, 384), color='white'))
+            if images:
+                first_img = images[0]
+                if hasattr(first_img, 'convert'):
+                    batch_images.append(first_img.convert('RGB'))
                 else:
                     batch_images.append(Image.new('RGB', (384, 384), color='white'))
             else:
@@ -278,6 +265,9 @@ def retrieval_jina_clip(queries, query_ids, documents, doc_ids, task, model_id, 
         cache.save()
     
     doc_emb = cache.get_embeddings_array(doc_ids)
+    # Convert numpy to tensor if needed
+    if isinstance(doc_emb, np.ndarray):
+        doc_emb = torch.from_numpy(doc_emb).float()
     doc_emb = F.normalize(doc_emb, p=2, dim=1)
     
     # ==================== QUERY EMBEDDINGS (MULTIMODAL) ====================
@@ -296,16 +286,13 @@ def retrieval_jina_clip(queries, query_ids, documents, doc_ids, task, model_id, 
         batch_texts = []
         
         for qid, query_text in zip(batch_query_ids, batch_queries):
-            image_paths = query_images_map.get(qid, [])
+            # Get images for this query (now PIL.Image objects from HF)
+            images = query_images_map.get(qid, [])
             
-            if image_paths:
-                img_path = "./" / image_dir / image_paths[0].split('/')[-1]
-                if img_path.exists():
-                    try:
-                        image = Image.open(img_path).convert('RGB')
-                        batch_images.append(image)
-                    except:
-                        batch_images.append(None)
+            if images:
+                first_img = images[0]
+                if hasattr(first_img, 'convert'):
+                    batch_images.append(first_img.convert('RGB'))
                 else:
                     batch_images.append(None)
             else:
@@ -355,24 +342,56 @@ def retrieval_jina_clip(queries, query_ids, documents, doc_ids, task, model_id, 
 
 
 
-def load_query_images(query_ids, query_images_map, image_dir):
-    """Helper function to load images for queries"""
+def load_query_images(query_ids, query_images_map, image_dir=None):
+    """Helper function to load images for queries.
+    
+    query_images_map can now contain either:
+    - list of PIL.Image objects (from HF bytes loading)
+    - list of file path strings (from local files)
+    """
     query_images = []
+    images_found = 0
+    
     for qid in query_ids:
-        image_paths = query_images_map.get(qid, [])
+        images = query_images_map.get(qid, [])
         
-        if image_paths:
-            img_path = "./" / image_dir / image_paths[0].split('/')[-1]
-            if img_path.exists():
+        if images:
+            first_img = images[0]
+            
+            # Already a PIL Image
+            if hasattr(first_img, 'convert'):
+                query_images.append(first_img.convert('RGB') if first_img.mode != 'RGB' else first_img)
+                images_found += 1
+            # It's a file path string
+            elif isinstance(first_img, str):
                 try:
-                    query_images.append(Image.open(img_path).convert('RGB'))
-                except:
+                    from pathlib import Path
+                    if image_dir:
+                        img_path = Path(image_dir) / first_img.split('/')[-1]
+                    else:
+                        img_path = Path(first_img)
+                    if img_path.exists():
+                        query_images.append(Image.open(img_path).convert('RGB'))
+                        images_found += 1
+                    else:
+                        print(f"Warning: Image not found: {img_path}")
+                        query_images.append(None)
+                except Exception as e:
+                    print(f"Error loading image: {e}")
                     query_images.append(None)
             else:
-                print(f"Warning: Image not found: {img_path}")
+                print(f"Warning: Unknown image type for qid {qid}: {type(first_img)}")
                 query_images.append(None)
         else:
             query_images.append(None)
+    
+    print(f"[load_query_images] Loaded {images_found}/{len(query_ids)} images from query_images_map")
+    if images_found == 0 and query_images_map:
+        # Debug: print sample keys
+        sample_keys = list(query_images_map.keys())[:3]
+        sample_qids = list(query_ids)[:3]
+        print(f"[DEBUG] Sample query_images_map keys: {sample_keys}")
+        print(f"[DEBUG] Sample query_ids: {sample_qids}")
     
     return query_images
 
@@ -468,6 +487,9 @@ def retrieval_nomic_vision(queries, query_ids, documents, doc_ids, task, model_i
         cache.save()
     
     doc_emb = cache.get_embeddings_array(doc_ids)
+    # Convert numpy to tensor if needed
+    if isinstance(doc_emb, np.ndarray):
+        doc_emb = torch.from_numpy(doc_emb).float()
     doc_emb = F.normalize(doc_emb, p=2, dim=1)
     
     # ==================== ENCODE QUERIES (TEXT + VISION) ====================
@@ -576,6 +598,9 @@ def retrieval_llava(queries, query_ids, documents, doc_ids, task, model_id, inst
         cache.save()
     
     doc_emb = cache.get_embeddings_array(doc_ids)
+    # Convert numpy to tensor if needed
+    if isinstance(doc_emb, np.ndarray):
+        doc_emb = torch.from_numpy(doc_emb).float()
     doc_emb = F.normalize(doc_emb, p=2, dim=1)
     
     # ==================== ENCODE QUERIES (TEXT + VISION) ====================
@@ -611,7 +636,8 @@ def retrieval_llava(queries, query_ids, documents, doc_ids, task, model_id, inst
             embeddings = F.normalize(embeddings, p=2, dim=1)
             query_emb.append(embeddings.cpu())
     
-    query_emb = torch.cat(query_emb, dim=0)
+    query_emb = torch.cat(query_emb, dim=0).float()  # Ensure float32
+    doc_emb = doc_emb.float()  # Ensure float32
     scores = (query_emb @ doc_emb.T) * 100
     
     return get_scores(query_ids, doc_ids, scores.tolist(), excluded_ids)
@@ -750,13 +776,8 @@ def retrieval_bge_vl(queries, query_ids, documents, doc_ids, task, model_id, ins
     doc_emb = F.normalize(doc_emb, p=2, dim=1)
     
     # ==================== ENCODE QUERIES (TEXT + VISION) ====================
-    print("\nEncoding multimodal queries...")
-    query_file = dataset_dir / 'filtered_queries' / task / f"{task}_queries_kept.jsonl"
-    query_data_map = {}
-    with open(query_file, 'r') as f:
-        for line in f:
-            data = json.loads(line)
-            query_data_map[data['id']] = data
+    # Use query_images_map passed via kwargs (PIL images from HF)
+    query_images_map = kwargs.get('query_images_map', {})
     
     query_emb_list = []
     failed_queries = []
@@ -765,9 +786,8 @@ def retrieval_bge_vl(queries, query_ids, documents, doc_ids, task, model_id, ins
         query_text = queries[i]
         query_id = query_ids[i]
         
-        # Load image if available
-        query_data = query_data_map.get(query_id, {})
-        image_paths = query_data.get('image_paths', [])
+        # Get images from query_images_map (now PIL.Image objects from HF)
+        images = query_images_map.get(query_id, [])
         
         success = False
         
@@ -779,12 +799,15 @@ def retrieval_bge_vl(queries, query_ids, documents, doc_ids, task, model_id, ins
                 if len(truncated_query.strip()) < 3:
                     truncated_query = query_text[:20].strip()
                 
-                if image_paths:
-                    img_path = "./" / image_dir / image_paths[0].split('/')[-1]
-                    if img_path.exists():
-                        query_emb = model.encode(images=str(img_path), text=truncated_query)
-                    else:
-                        query_emb = model.encode(text=truncated_query)
+                if images and hasattr(images[0], 'convert'):
+                    # Save PIL image to temp file for bge-vl (requires file path)
+                    import tempfile
+                    with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp:
+                        images[0].convert('RGB').save(tmp, format='PNG')
+                        tmp_path = tmp.name
+                    query_emb = model.encode(images=tmp_path, text=truncated_query)
+                    import os
+                    os.unlink(tmp_path)  # Clean up
                 else:
                     query_emb = model.encode(text=truncated_query)
                 
@@ -867,7 +890,15 @@ def retrieval_gme_qwen2_vl(queries, query_ids, documents, doc_ids, task, model_i
     model_name = 'Alibaba-NLP/gme-Qwen2-VL-2B-Instruct' if model_id == 'gme-qwen2-vl-2b' else 'Alibaba-NLP/gme-Qwen2-VL-7B-Instruct'
     
     print(f"Loading model: {model_name}")
-    gme = SentenceTransformer(model_name)
+    
+    # Add src/retrievers to path so custom_st can be imported by the model code
+    import sys
+    import os
+    retrievers_path = os.path.join(os.getcwd(), 'src', 'retrievers')
+    if retrievers_path not in sys.path:
+        sys.path.append(retrievers_path)
+        
+    gme = SentenceTransformer(model_name, trust_remote_code=True)
     
     batch_size = kwargs.get('batch_size', 8)
     dataset_dir = Path(kwargs.get('dataset_dir', '.'))
@@ -942,12 +973,9 @@ def retrieval_gme_qwen2_vl(queries, query_ids, documents, doc_ids, task, model_i
 
     # ==================== ENCODE QUERIES (TEXT + VISION) ====================
     print("\nEncoding multimodal queries...")
-    query_file = dataset_dir / 'filtered_queries' / task / f"{task}_queries_kept.jsonl"
-    query_data_map = {}
-    with open(query_file, 'r') as f:
-        for line in f:
-            data = json.loads(line)
-            query_data_map[data['id']] = data
+    
+    # Use query_images_map passed via kwargs (PIL images from HF)
+    query_images_map = kwargs.get('query_images_map', {})
     
     query_emb_list = []
 
@@ -956,21 +984,19 @@ def retrieval_gme_qwen2_vl(queries, query_ids, documents, doc_ids, task, model_i
         query_text = queries[i][:4000]
         query_id = query_ids[i]
 
-        # Load image if available
-        query_data = query_data_map.get(query_id, {})
-        image_paths = query_data.get('image_paths', [])
+        # Get images from query_images_map (now PIL.Image objects from HF)
+        images = query_images_map.get(query_id, [])
 
-        if image_paths:
-            # safer path join: take filename part only
-            img_name = image_paths[0].split('/')[-1]
-            img_path = image_dir / img_name
-
-            if img_path.exists() and img_path.suffix.lower() != '.svg':
-                # Multimodal: text + image as dict
-                query_input = {"text": query_text, "image": str(img_path)}
-            else:
-                # Text-only fallback
-                query_input = query_text
+        tmp_path = None  # Track temp file for cleanup
+        if images and hasattr(images[0], 'convert'):
+            # Save PIL image to temp file for gme-qwen2-vl (requires file path or PIL)
+            import tempfile
+            with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp:
+                images[0].convert('RGB').save(tmp, format='PNG')
+                tmp_path = tmp.name
+            
+            # Multimodal: text + image as dict
+            query_input = {"text": query_text, "image": tmp_path}
         else:
             # Text-only query
             query_input = query_text
@@ -982,6 +1008,12 @@ def retrieval_gme_qwen2_vl(queries, query_ids, documents, doc_ids, task, model_i
             normalize_embeddings=True,
             show_progress_bar=False,
         )
+        
+        # Clean up temp file after encoding
+        if tmp_path:
+            import os
+            os.unlink(tmp_path)
+            
         # emb shape is typically (1, dim) -> flatten to (dim,)
         if emb.ndim == 2 and emb.size(0) == 1:
             emb_vec = emb[0]
@@ -1159,8 +1191,9 @@ def retrieval_seed_multimodal(queries, query_ids, documents, doc_ids, task, mode
     print("SEED-1.6 MULTIMODAL")
     print("="*80)
     
-    # Note: Adjust this based on actual Seed-1.6 HuggingFace path
-    model_name = kwargs.get('model_name', 'AILab-CVC/SEED-X')
+    # Note: Using SEED-X-I (instruction-tuned) or base model
+    # The exact model path may vary - check HuggingFace for latest
+    model_name = kwargs.get('model_name', 'AILab-CVC/seed-x-i-8b')  # or 'AILab-CVC/SEED-X'
     
     print(f"Loading model: {model_name}")
     model = AutoModel.from_pretrained(model_name, trust_remote_code=True).to('cuda')
@@ -1280,14 +1313,13 @@ def retrieval_seed_multimodal(queries, query_ids, documents, doc_ids, task, mode
 # ==================== RETRIEVAL FUNCTIONS DICTIONARY ====================
 MULTIMODAL_RETRIEVAL_FUNCS = {
     'nomic-vision': retrieval_nomic_vision,
-    'llava-1.5': retrieval_llava,
-    'llava-1.6': retrieval_llava,
+    # Note: llava-1.5/1.6 removed - they are VLM (generative) models, not embedding models
     'bge-vl-large': retrieval_bge_vl,
     'bge-vl-base': retrieval_bge_vl,
     'gme-qwen2-vl-2b': retrieval_gme_qwen2_vl,
     'gme-qwen2-vl-7b': retrieval_gme_qwen2_vl,
-    'nvidia-mm-embed': retrieval_nvidia_mm_embed,
-    'seed-multimodal': retrieval_seed_multimodal,
+    # 'nvidia-mm-embed': retrieval_nvidia_mm_embed,  # Incompatible: custom config not recognized by AutoModel
+    # 'seed-multimodal': retrieval_seed_multimodal,  # Incompatible: repository not found/accessible
 }
 
 

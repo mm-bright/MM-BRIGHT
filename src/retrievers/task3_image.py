@@ -30,15 +30,28 @@ def _l2norm_np(x: np.ndarray) -> np.ndarray:
     n = np.linalg.norm(x, axis=1, keepdims=True) + 1e-12
     return x / n
 
-def _get_query_image_paths(batch_query_ids, query_images_map, image_dir: Path):
-    # returns list[Path|None] aligned with batch_query_ids
+def _get_query_image_paths(batch_query_ids, query_images_map, image_dir: Path = None):
+    """
+    Get query images - now handles both PIL.Image objects (from HF) and file paths.
+    Returns list[PIL.Image|Path|None] aligned with batch_query_ids.
+    """
     out = []
     for qid in batch_query_ids:
-        image_paths = query_images_map.get(qid, []) or []
-        if image_paths:
-            img_name = Path(image_paths[0]).name
-            p = image_dir / img_name
-            out.append(p if p.exists() else None)
+        images = query_images_map.get(qid, []) or []
+        if images:
+            first_img = images[0]
+            # Already a PIL Image from HF
+            if hasattr(first_img, 'convert'):
+                out.append(first_img)
+            # It's a file path string
+            elif isinstance(first_img, str):
+                if image_dir:
+                    img_path = image_dir / Path(first_img).name
+                else:
+                    img_path = Path(first_img)
+                out.append(img_path if img_path.exists() else None)
+            else:
+                out.append(None)
         else:
             out.append(None)
     return out
@@ -228,13 +241,24 @@ def retrieval_clip_it2i(queries, query_ids, documents, doc_ids, task, model_id, 
         bq = queries[i:i + batch_size]
         bqid = query_ids[i:i + batch_size]
         qimg_paths = _get_query_image_paths(bqid, query_images_map, image_dir)
+        
+        # Debug: Print how many images were found
+        if i == 0:
+            images_found = sum(1 for q in qimg_paths if q is not None)
+            print(f"[DEBUG] Query images found: {images_found}/{len(qimg_paths)}")
+            print(f"[DEBUG] Sample query_ids: {bqid[:3]}")
+            print(f"[DEBUG] query_images_map keys sample: {list(query_images_map.keys())[:3] if query_images_map else 'EMPTY'}")
 
         texts = [(t or "") for t in bq]
         img_np = []
         for qp in qimg_paths:
             if qp is None:
                 img_np.append(np.full((224, 224, 3), 255, dtype=np.uint8))
+            elif hasattr(qp, 'convert'):
+                # It's a PIL Image - convert to RGB numpy array
+                img_np.append(np.array(qp.convert('RGB')))
             else:
+                # It's a file path
                 img_np.append(safe_rgb_np(str(qp), fallback_hw=(224, 224)))
 
         # If a weird query image still breaks, replace it
@@ -391,6 +415,12 @@ def retrieval_siglip_it2i(queries, query_ids, documents, doc_ids, task, model_id
         for qp in qimg_paths:
             if qp is None:
                 img_np.append(np.full((384, 384, 3), 255, dtype=np.uint8))
+            elif hasattr(qp, 'convert'):
+                # It's a PIL Image - convert to RGB numpy array
+                img = qp.convert('RGB')
+                if img.size != (384, 384):
+                    img = img.resize((384, 384))
+                img_np.append(np.array(img))
             else:
                 img_np.append(safe_rgb_np(str(qp), fallback_hw=(384, 384)))
 
@@ -717,19 +747,45 @@ def retrieval_bge_vl_it2i(queries, query_ids, documents, doc_ids, task, model_id
     # ------------------------------------------------------------
     # 1) cache corpus IMAGE embeddings
     # ------------------------------------------------------------
+    cache_dir_path = Path(cache_dir) / "img_emb" / f"{model_id}_bgevl_it2i" / task
+    cache_dir_path.mkdir(parents=True, exist_ok=True)
+    blank_img = ensure_blank(cache_dir_path, size=(224, 224))
+    
     cache = SmartCache(cache_dir, f"{model_id}_bgevl_it2i", task, long_context, batch_size, sub_dir='img_emb')
     cache.load()
     
     to_encode, to_encode_ids = cache.get_uncached_docs(doc_ids, documents)
 
     if len(to_encode) > 0:
+        import tempfile
         new_embs = []
         for i in trange(0, len(to_encode), batch_size, desc="Encoding corpus images (BGE-VL)"):
-            batch_paths = to_encode[i:i + batch_size]
-            paths = [safe_image_path(p, blank_img) for p in batch_paths]
+            batch_items = to_encode[i:i + batch_size]
+            paths = []
+            temp_files = []
+            
+            for item in batch_items:
+                # Check if item is PIL Image or file path
+                if hasattr(item, 'convert'):
+                    # It's a PIL Image - save to temp file
+                    with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp:
+                        item.convert('RGB').save(tmp, format='PNG')
+                        temp_files.append(tmp.name)
+                        paths.append(tmp.name)
+                else:
+                    # It's a file path
+                    paths.append(safe_image_path(item, blank_img))
             
             emb = encode_images_batch(paths)
             new_embs.append(emb)
+            
+            # Clean up temp files
+            import os
+            for tf in temp_files:
+                try:
+                    os.unlink(tf)
+                except:
+                    pass
 
         cache.update(new_embs, to_encode_ids)
         cache.save()
@@ -749,16 +805,32 @@ def retrieval_bge_vl_it2i(queries, query_ids, documents, doc_ids, task, model_id
         ipaths = query_images_map.get(str(qid), []) or []
         qimg = None
         if ipaths:
-            img_name = Path(ipaths[0]).name
-            p = image_dir / img_name
-            if p.exists():
-                qimg = safe_image_path(str(p), blank_img)
+            first_img = ipaths[0]
+            # Check if it's a PIL Image or path string
+            if hasattr(first_img, 'convert'):
+                # Save PIL to temp file
+                import tempfile
+                with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp:
+                    first_img.convert('RGB').save(tmp, format='PNG')
+                    qimg = tmp.name
+            elif isinstance(first_img, str):
+                img_name = Path(first_img).name
+                p = image_dir / img_name
+                if p.exists():
+                    qimg = safe_image_path(str(p), blank_img)
 
         t_emb = encode_text_one(qtext)  # (1, D)
         if qimg is not None:
             i_emb = encode_image_one(qimg)  # (1, D)
             fused = _l2norm_np((t_emb + i_emb) / 2.0)
             q_embs.append(fused)
+            # Clean up temp file if we created one
+            if hasattr(first_img, 'convert'):
+                import os
+                try:
+                    os.unlink(qimg)
+                except:
+                    pass
         else:
             q_embs.append(t_emb)
 
@@ -787,7 +859,7 @@ def retrieval_gme_it2i(queries, query_ids, documents, doc_ids, task, model_id, i
 
     # model_id is 'gme-qwen2-vl-2b' or 'gme-qwen2-vl-7b'
     model_name = 'Alibaba-NLP/gme-Qwen2-VL-2B-Instruct' if model_id == 'gme-qwen2-vl-2b' else 'Alibaba-NLP/gme-Qwen2-VL-7B-Instruct'
-    gme = SentenceTransformer(model_name)
+    gme = SentenceTransformer(model_name, trust_remote_code=True)
 
     batch_size = kwargs.get('batch_size', 8)
     topk = kwargs.get('topk', 1000)
@@ -803,12 +875,35 @@ def retrieval_gme_it2i(queries, query_ids, documents, doc_ids, task, model_id, i
     to_encode, to_encode_ids = cache.get_uncached_docs(doc_ids, documents)
 
     if len(to_encode) > 0:
+        import tempfile
         new_embs = []
         for i in trange(0, len(to_encode), batch_size, desc="Encoding corpus images (GME)"):
-            batch_paths = to_encode[i:i+batch_size]
-            inputs = [{"image": p} for p in batch_paths]
+            batch_items = to_encode[i:i+batch_size]
+            inputs = []
+            temp_files = []
+            
+            for item in batch_items:
+                # Check if item is PIL Image or file path
+                if hasattr(item, 'convert'):
+                    # It's a PIL Image - save to temp file
+                    with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp:
+                        item.convert('RGB').save(tmp, format='PNG')
+                        temp_files.append(tmp.name)
+                        inputs.append({"image": tmp.name})
+                else:
+                    # It's a file path
+                    inputs.append({"image": str(item)})
+            
             emb = gme.encode(inputs, convert_to_tensor=True, normalize_embeddings=True, show_progress_bar=False)
             new_embs.append(emb.cpu().float().numpy())
+            
+            # Clean up temp files
+            import os
+            for tf in temp_files:
+                try:
+                    os.unlink(tf)
+                except:
+                    pass
 
         cache.update(new_embs, to_encode_ids)
         cache.save()
@@ -825,11 +920,21 @@ def retrieval_gme_it2i(queries, query_ids, documents, doc_ids, task, model_id, i
 
         qimgs = query_images_map.get(qid, []) or []
         qimg_path = None
+        
         if qimgs:
-            img_name = Path(qimgs[0]).name
-            p = image_dir / img_name
-            if p.exists() and p.suffix.lower() != '.svg':
-                qimg_path = str(p)
+            first_img = qimgs[0]
+            # Check if it's a PIL Image or path
+            if hasattr(first_img, 'convert'):
+                # Save PIL to temp file
+                import tempfile
+                with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp:
+                    first_img.convert('RGB').save(tmp, format='PNG')
+                    qimg_path = tmp.name
+            elif isinstance(first_img, str):
+                img_name = Path(first_img).name
+                p = image_dir / img_name
+                if p.exists() and p.suffix.lower() != '.svg':
+                    qimg_path = str(p)
 
         if qimg_path is not None:
             inp = {"text": qtext, "image": qimg_path}
