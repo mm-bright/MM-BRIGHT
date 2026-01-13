@@ -16,7 +16,7 @@
 </p>
 
 <p align="center">
-    <img src="latex/figures/intro_fig_2.png" width="80%" alt="Overview of MM-BRIGHT Tasks" style="border-radius: 10px;">
+    <img src="figures/intro_fig_2.png" width="80%" alt="Overview of MM-BRIGHT Tasks" style="border-radius: 10px;">
 </p>
 
 ### 🚨 News
