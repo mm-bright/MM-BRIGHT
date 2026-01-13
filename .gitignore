@@ -1,0 +1,35 @@
+# Cache and temporary files
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+cache/
+outputs/
+outputs_steps/
+
+# Dataset
+data/
+
+# Paper
+*.tex
+*.bib
+*.aux
+*.log
+*.out
+*.bbl
+*.blg
+
+# IDE settings
+.vscode/
+.idea/
+
+
+upload.py
+prepare.py
+prepre.py
+verify_upload.py
+verify_hf_dataset.py
+prepre.py
+prepare2.py
+README_HF.md
+paper_latex.tex
