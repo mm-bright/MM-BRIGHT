@@ -64,10 +64,18 @@ ImageFile.LOAD_TRUNCATED_IMAGES = True
 def _safe_open_image(path, fallback_size=(224, 224)):
     """
     Always return a PIL RGB image.
-    Accepts str/Path/None.
+    Accepts str/Path/PIL.Image/None.
     """
     if path is None:
         return Image.new("RGB", fallback_size, color="white")
+    
+    # Already a PIL Image - just convert to RGB
+    if hasattr(path, 'convert'):
+        try:
+            im = ImageOps.exif_transpose(path)
+            return im.convert("RGB")
+        except Exception:
+            return Image.new("RGB", fallback_size, color="white")
 
     try:
         with Image.open(path) as im:
@@ -288,15 +296,8 @@ def retrieval_clip_it2it(queries, query_ids, documents, doc_ids, task, model_id,
     doc_emb_cpu = emb_arr[idxs].astype(np.float32)
     doc_emb_cpu = _normalize_np(doc_emb_cpu)
 
-    # encode queries (text+image from query jsonl)
-    dataset_dir = Path(kwargs.get("dataset_dir", "."))
-    queries_subdir = kwargs.get("queries_subdir", "filtered_queries_with_filtered_images")
-    query_file = dataset_dir / queries_subdir / task / f"{task}_annotated.jsonl"
-    qmap = {}
-    with open(query_file, "r", encoding="utf-8") as f:
-        for line in f:
-            d = json.loads(line)
-            qmap[str(d["id"])] = d
+    # encode queries (text+image from query_images_map passed via kwargs)
+    query_images_map = kwargs.get('query_images_map', {})
 
     q_embs = []
     for i in trange(0, len(queries), batch_size, desc="Encoding queries (CLIP)"):
@@ -305,16 +306,15 @@ def retrieval_clip_it2it(queries, query_ids, documents, doc_ids, task, model_id,
 
         imgs = []
         for qid in batch_ids:
-            d = qmap.get(str(qid), {})
-            ipaths = d.get("image_paths", []) or []
-            if ipaths:
-                # query images are under dataset_dir/images/<domain>/... in your old setup,
-                # BUT for this IT→IT we only need the *path on disk*. Use the same as your existing pipeline:
-                # If your query images are elsewhere, adjust here.
-                # We try common location: dataset_dir/images/<domain>/<filename>
-                img_name = ipaths[0].split("/")[-1]
-                candidate = dataset_dir / "images" / task / img_name
-                imgs.append(_safe_open_image(str(candidate) if candidate.exists() else None, fallback_size=(224,224)))
+            qimgs = query_images_map.get(str(qid), []) or []
+            if qimgs:
+                first_img = qimgs[0]
+                # Check if it's a PIL Image or path string
+                if hasattr(first_img, 'convert'):
+                    imgs.append(_safe_open_image(first_img, fallback_size=(224,224)))
+                else:
+                    # It's a file path - try to load it
+                    imgs.append(_safe_open_image(str(first_img), fallback_size=(224,224)))
             else:
                 imgs.append(_safe_open_image(None, fallback_size=(224,224)))
 
@@ -448,15 +448,8 @@ def retrieval_siglip_it2it(queries, query_ids, documents, doc_ids, task, model_i
     doc_emb_cpu = emb_arr[idxs].astype(np.float32)
     doc_emb_cpu = _normalize_np(doc_emb_cpu)
 
-    # query images
-    dataset_dir = Path(kwargs.get("dataset_dir", "."))
-    queries_subdir = kwargs.get("queries_subdir", "filtered_queries_with_filtered_images")
-    query_file = dataset_dir / queries_subdir / task / f"{task}_annotated.jsonl"
-    qmap = {}
-    with open(query_file, "r", encoding="utf-8") as f:
-        for line in f:
-            d = json.loads(line)
-            qmap[str(d["id"])] = d
+    # query images (from query_images_map passed via kwargs)
+    query_images_map = kwargs.get('query_images_map', {})
 
     q_embs = []
     for i in trange(0, len(queries), batch_size, desc="Encoding queries (SigLIP)"):
@@ -465,12 +458,13 @@ def retrieval_siglip_it2it(queries, query_ids, documents, doc_ids, task, model_i
 
         imgs = []
         for qid in batch_ids:
-            d = qmap.get(str(qid), {})
-            ipaths = d.get("image_paths", []) or []
-            if ipaths:
-                img_name = ipaths[0].split("/")[-1]
-                candidate = dataset_dir / "images" / task / img_name
-                imgs.append(_safe_open_image(str(candidate) if candidate.exists() else None, fallback_size=(384,384)))
+            qimgs = query_images_map.get(str(qid), []) or []
+            if qimgs:
+                first_img = qimgs[0]
+                if hasattr(first_img, 'convert'):
+                    imgs.append(_safe_open_image(first_img, fallback_size=(384,384)))
+                else:
+                    imgs.append(_safe_open_image(str(first_img), fallback_size=(384,384)))
             else:
                 imgs.append(_safe_open_image(None, fallback_size=(384,384)))
 
@@ -562,14 +556,8 @@ def retrieval_jina_clip_it2it(queries, query_ids, documents, doc_ids, task, mode
     doc_emb_cpu = _normalize_np(doc_emb_cpu)
 
     # query images from jsonl
-    dataset_dir = Path(kwargs.get("dataset_dir", "."))
-    queries_subdir = kwargs.get("queries_subdir", "filtered_queries_with_filtered_images")
-    query_file = dataset_dir / queries_subdir / task / f"{task}_annotated.jsonl"
-    qmap = {}
-    with open(query_file, "r", encoding="utf-8") as f:
-        for line in f:
-            d = json.loads(line)
-            qmap[str(d["id"])] = d
+    # query images (from query_images_map passed via kwargs)
+    query_images_map = kwargs.get('query_images_map', {})
 
     q_embs = []
     for i in trange(0, len(queries), batch_size, desc="Encoding queries (Jina-CLIP)"):
@@ -578,12 +566,13 @@ def retrieval_jina_clip_it2it(queries, query_ids, documents, doc_ids, task, mode
 
         imgs = []
         for qid in batch_ids:
-            d = qmap.get(str(qid), {})
-            ipaths = d.get("image_paths", []) or []
-            if ipaths:
-                img_name = ipaths[0].split("/")[-1]
-                candidate = dataset_dir / "images" / task / img_name
-                imgs.append(_safe_open_image(str(candidate) if candidate.exists() else None, fallback_size=(224,224)))
+            qimgs = query_images_map.get(str(qid), []) or []
+            if qimgs:
+                first_img = qimgs[0]
+                if hasattr(first_img, 'convert'):
+                    imgs.append(_safe_open_image(first_img, fallback_size=(224,224)))
+                else:
+                    imgs.append(_safe_open_image(str(first_img), fallback_size=(224,224)))
             else:
                 imgs.append(_safe_open_image(None, fallback_size=(224,224)))
 
@@ -802,30 +791,26 @@ def retrieval_bge_vl_large_it2it(
     # --------------------------
     # Encode queries
     # --------------------------
-    dataset_dir = Path(kwargs.get("dataset_dir", "."))
-    queries_subdir = kwargs.get("queries_subdir", "filtered_queries_with_filtered_images")
-    query_file = dataset_dir / queries_subdir / task / f"{task}_annotated.jsonl"
-
-    qmap = {}
-    with open(query_file, "r", encoding="utf-8") as f:
-        for line in f:
-            d = json.loads(line)
-            qmap[str(d["id"])] = d
+    query_images_map = kwargs.get('query_images_map', {})
 
     q_embs = []
     for i in tqdm(range(len(queries)), desc="Encoding queries (BGE-VL-large)"):
         raw_q = queries[i]
         qid = str(query_ids[i])
 
-        d = qmap.get(qid, {})
-        ipaths = d.get("image_paths", []) or []
+        qimgs = query_images_map.get(qid, []) or []
 
         img_use = None
-        if ipaths:
-            img_name = ipaths[0].split("/")[-1]
-            candidate = dataset_dir / "images" / task / img_name
-            if candidate.exists():
-                img_use = str(candidate)
+        if qimgs:
+            first_img = qimgs[0]
+            if hasattr(first_img, 'convert'):
+                # PIL Image - save to temp file for encoding
+                import tempfile
+                with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp:
+                    first_img.convert('RGB').save(tmp, format='PNG')
+                    img_use = tmp.name
+            elif isinstance(first_img, str):
+                img_use = first_img
 
         emb_vec = None
         for char_limit in [150, 120, 100, 80, 60, 40, 20]:
@@ -892,7 +877,7 @@ def retrieval_gme_qwen2_vl_it2it(
         model_name = kwargs.get("model_name", "Alibaba-NLP/gme-Qwen2-VL-2B-Instruct")
         tag = "gme_qwen2_vl_2b"
 
-    gme = SentenceTransformer(model_name)
+    gme = SentenceTransformer(model_name, trust_remote_code=True)
 
     cache_dir_path = Path(cache_dir) / "pair_emb" / tag / task / f"bs_{batch_size}"
     _ensure_dir(cache_dir_path)
@@ -992,30 +977,9 @@ def retrieval_gme_qwen2_vl_it2it(
     doc_emb_cpu = _normalize_np(doc_emb_cpu)
 
     # --------------------------
-    # 2) Load query image paths (robust file selection)
+    # 2) Load query images (from query_images_map via kwargs)
     # --------------------------
-    dataset_dir = Path(kwargs.get("dataset_dir", "."))
-    queries_subdir = kwargs.get("queries_subdir", "filtered_queries_with_filtered_images")
-
-    # try multiple filenames (your pipeline uses different names sometimes)
-    candidates = [
-        dataset_dir / queries_subdir / task / f"{task}_annotated.jsonl",
-        dataset_dir / queries_subdir / task / f"{task}_annotated.jsonl",
-        dataset_dir / queries_subdir / task / f"{task}_queries.jsonl",
-    ]
-    query_file = None
-    for c in candidates:
-        if c.exists():
-            query_file = c
-            break
-    if query_file is None:
-        raise FileNotFoundError(f"Could not find query file in {dataset_dir/queries_subdir/task}")
-
-    qmap = {}
-    with open(query_file, "r", encoding="utf-8") as f:
-        for line in f:
-            d = json.loads(line)
-            qmap[str(d["id"])] = d
+    query_images_map = kwargs.get('query_images_map', {})
 
     # --------------------------
     # 3) Encode QUERY embeddings (NO mixed batches)
@@ -1028,16 +992,21 @@ def retrieval_gme_qwen2_vl_it2it(
 
     for i in range(len(queries)):
         qid = str(query_ids[i])
-        d = qmap.get(qid, {})
-        ipaths = d.get("image_paths", []) or []
+        qimgs = query_images_map.get(qid, []) or []
         img_ok = False
         img_path = None
 
-        if ipaths:
-            img_name = ipaths[0].split("/")[-1]
-            cand = dataset_dir / "images" / task / img_name
-            if cand.exists():
-                img_path = safe_img_path(str(cand))
+        if qimgs:
+            first_img = qimgs[0]
+            if hasattr(first_img, 'convert'):
+                # PIL Image - save to temp file
+                import tempfile
+                with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp:
+                    first_img.convert('RGB').save(tmp, format='PNG')
+                    img_path = tmp.name
+                    img_ok = True
+            elif isinstance(first_img, str):
+                img_path = safe_img_path(first_img)
                 img_ok = True
 
         if img_ok:
@@ -1166,15 +1135,8 @@ def retrieval_nomic_it2it(queries, query_ids, documents, doc_ids, task, model_id
     doc_emb_cpu = emb_arr[idxs].astype(np.float32)
     doc_emb_cpu = _normalize_np(doc_emb_cpu)
 
-    # query images
-    dataset_dir = Path(kwargs.get("dataset_dir", "."))
-    queries_subdir = kwargs.get("queries_subdir", "filtered_queries_with_filtered_images")
-    query_file = dataset_dir / queries_subdir / task / f"{task}_annotated.jsonl"
-    qmap = {}
-    with open(query_file, "r", encoding="utf-8") as f:
-        for line in f:
-            d = json.loads(line)
-            qmap[str(d["id"])] = d
+    # query images (from query_images_map passed via kwargs)
+    query_images_map = kwargs.get('query_images_map', {})
 
     q_embs = []
     for i in trange(0, len(queries), batch_size, desc="Encoding queries (Nomic)"):
@@ -1193,14 +1155,15 @@ def retrieval_nomic_it2it(queries, query_ids, documents, doc_ids, task, model_id
         real_idx = []
         real_imgs = []
         for k, qid in enumerate(batch_ids):
-            d = qmap.get(str(qid), {})
-            ipaths = d.get("image_paths", []) or []
-            if ipaths:
-                img_name = ipaths[0].split("/")[-1]
-                candidate = dataset_dir / "images" / task / img_name
-                if candidate.exists():
+            qimgs = query_images_map.get(str(qid), []) or []
+            if qimgs:
+                first_img = qimgs[0]
+                if hasattr(first_img, 'convert'):
                     real_idx.append(k)
-                    real_imgs.append(_safe_open_image(str(candidate), fallback_size=(224,224)))
+                    real_imgs.append(_safe_open_image(first_img, fallback_size=(224,224)))
+                elif isinstance(first_img, str):
+                    real_idx.append(k)
+                    real_imgs.append(_safe_open_image(first_img, fallback_size=(224,224)))
 
         if real_imgs:
             vin = _safe_vproc_pixel_values(vproc, real_imgs, device, fallback_size=(224, 224))

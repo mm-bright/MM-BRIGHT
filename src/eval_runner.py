@@ -238,12 +238,34 @@ class EvaluationRunner:
         # This is strictly dependent on the map (gold_ids for T1/2/4, pos_imgs for T3)
         # Simple generic qrel builder:
         qrels = {}
+        
+        # For Task 4 (text_pair), doc_ids have format "base_id|||..." but gold_ids are just "base_id"
+        # Build a mapping from base_id -> all matching doc_ids
+        if self.task_type == 'text_pair':
+            base_to_doc_ids = {}
+            for did in doc_ids:
+                did_str = str(did)
+                if '|||' in did_str:
+                    base_id = did_str.split('|||')[0]
+                else:
+                    base_id = did_str
+                base_to_doc_ids.setdefault(base_id, []).append(did_str)
+        
         for qid in query_ids:
             qrels[str(qid)] = {}
             # Prefer gold_ids if T1/2/4
-            if self.task_type in ['text_text', 'multimodal_text', 'text_pair']:
+            if self.task_type in ['text_text', 'multimodal_text']:
                 for gid in gold_ids_map.get(qid, []):
-                    qrels[str(qid)][str(gid)] = 1 
+                    qrels[str(qid)][str(gid)] = 1
+            elif self.task_type == 'text_pair':
+                # For Task 4: map gold_id (base) to all matching doc_ids (with ||| suffix)
+                for gid in gold_ids_map.get(qid, []):
+                    matching_doc_ids = base_to_doc_ids.get(str(gid), [])
+                    for did in matching_doc_ids:
+                        qrels[str(qid)][did] = 1
+                    # Also add the base ID in case it exists directly
+                    if str(gid) in [str(d) for d in doc_ids]:
+                        qrels[str(qid)][str(gid)] = 1
             else: # T3 - uses positive_images (image IDs for image retrieval)
                  # positive_images_map contains the correct image IDs for Task 3
                  if 'positive_images_map' in locals() and positive_images_map:
