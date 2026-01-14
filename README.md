@@ -20,9 +20,8 @@
 </p>
 
 ### 🚨 News
-- **[2025-01]** 🚀 **MM-BRIGHT Launch**: We release the MM-BRIGHT benchmark, dataset, and evaluation code!
-- **[2025-01]** 📄 **Paper**: Our paper describing the construction and analysis of MM-BRIGHT is available on ArXiv.
-- **[2025-01]** 🛠️ **Code**: Full evaluation code for all 4 tasks is released.
+- **[2026-01]** 🚀 **MM-BRIGHT Launch**: We release the MM-BRIGHT benchmark, dataset, and evaluation code!
+- **[2026-01]** 🛠️ **Code**: Full evaluation code for all 4 tasks is released.
 
 ---
 
@@ -259,12 +258,7 @@ MM-BRIGHT/
 If you use MM-BRIGHT in your work, please cite our paper:
 
 ```bibtex
-@article{mm-bright2025,
-  title={MM-BRIGHT: A Multi-Task Multimodal Benchmark for Reasoning-Intensive Retrieval},
-  author={...},
-  journal={arXiv preprint},
-  year={2025}
-}
+soon
 ```
 
 ---
@@ -278,4 +272,5 @@ This project is licensed under [CC-BY-4.0](https://creativecommons.org/licenses/
 ## 🙏 Acknowledgments
 
 MM-BRIGHT is built on top of the excellent [BRIGHT](https://github.com/xlang-ai/BRIGHT) benchmark and extends it to the multimodal domain. We thank the Stack Exchange community for providing the raw data that makes this benchmark possible.
+
 
