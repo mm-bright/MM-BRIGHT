@@ -1,12 +1,12 @@
 # MM-BRIGHT: A Multi-Task Multimodal Benchmark for Reasoning-Intensive Retrieval
 
 <p align="center">
-    <a href="https://github.com/mm-bright/MM-BRIGHT" target="_blank">
+    <!-- <a href="https://github.com/mm-bright/MM-BRIGHT" target="_blank">
         <img src="https://img.shields.io/badge/🌐_Website-MM--BRIGHT-blue?style=for-the-badge&logo=google-chrome&logoColor=white" alt="Website">
     </a>
     <a href="https://arxiv.org/abs/xxxx.xxxxx" target="_blank">
         <img src="https://img.shields.io/badge/📄_Paper-ArXiv-b31b1b?style=for-the-badge&logo=arxiv&logoColor=white" alt="ArXiv">
-    </a>
+    </a> -->
     <a href="https://huggingface.co/datasets/mm-bright/MM-BRIGHT" target="_blank">
         <img src="https://img.shields.io/badge/🤗_Dataset-Hugging_Face-FFD21E?style=for-the-badge&logo=huggingface&logoColor=black" alt="Hugging Face Datasets">
     </a>
@@ -278,3 +278,4 @@ This project is licensed under [CC-BY-4.0](https://creativecommons.org/licenses/
 ## 🙏 Acknowledgments
 
 MM-BRIGHT is built on top of the excellent [BRIGHT](https://github.com/xlang-ai/BRIGHT) benchmark and extends it to the multimodal domain. We thank the Stack Exchange community for providing the raw data that makes this benchmark possible.
+
