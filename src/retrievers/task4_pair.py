@@ -29,13 +29,18 @@ from tqdm import tqdm, trange
 from sklearn.metrics.pairwise import cosine_similarity
 
 from src.caching import SmartCache
-from src.utils import cut_text, add_instruct_concatenate, last_token_pool, safe_image_path, ensure_blank
+from src.utils import cut_text, add_instruct_concatenate, last_token_pool, safe_image_path, ensure_blank, pooled_features
 from src.retrievers.task1_text import calculate_retrieval_metrics
 
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 import requests
 from io import BytesIO
-import clip  # pip install git+https://github.com/openai/CLIP.git
+try:
+    import clip  # pip install git+https://github.com/openai/CLIP.git
+except ImportError:
+    # Only the open_clip-based retrievers need it; importing the package
+    # must not require it.
+    clip = None
 
 def safe_pil_rgb(img_path: str, fallback_size=(224, 224)) -> Image.Image:
     """Always return a PIL.Image in RGB."""
@@ -278,8 +283,8 @@ def retrieval_clip_it2it(queries, query_ids, documents, doc_ids, task, model_id,
                              truncation=True, max_length=77).to(device)
             # i_in = processor(images=batch_imgs, return_tensors="pt").to(device)
             i_in = _clip_safe_images(processor, batch_imgs, device)
-            t_feat = model.get_text_features(**t_in)
-            i_feat = model.get_image_features(**i_in)
+            t_feat = pooled_features(model.get_text_features(**t_in))
+            i_feat = pooled_features(model.get_image_features(**i_in))
             comb = (t_feat + i_feat) / 2.0
             comb = F.normalize(comb, p=2, dim=1).detach().cpu().float().numpy()
             new_embs.append(comb)
@@ -321,8 +326,8 @@ def retrieval_clip_it2it(queries, query_ids, documents, doc_ids, task, model_id,
         t_in = processor(text=batch_q, return_tensors="pt", padding=True, truncation=True, max_length=77).to(device)
         i_in = processor(images=imgs, return_tensors="pt").to(device)
 
-        t_feat = model.get_text_features(**t_in)
-        i_feat = model.get_image_features(**i_in)
+        t_feat = pooled_features(model.get_text_features(**t_in))
+        i_feat = pooled_features(model.get_image_features(**i_in))
         comb = (t_feat + i_feat) / 2.0
         comb = F.normalize(comb, p=2, dim=1).detach().cpu()
 
@@ -425,9 +430,9 @@ def retrieval_siglip_it2it(queries, query_ids, documents, doc_ids, task, model_i
                 "pixel_values": image_inputs["pixel_values"],
             }
 
-            t_feat = model.get_text_features(input_ids=inputs["input_ids"],
-                                             attention_mask=inputs.get("attention_mask", None))
-            i_feat = model.get_image_features(pixel_values=inputs["pixel_values"])
+            t_feat = pooled_features(model.get_text_features(input_ids=inputs["input_ids"],
+                                             attention_mask=inputs.get("attention_mask", None)))
+            i_feat = pooled_features(model.get_image_features(pixel_values=inputs["pixel_values"]))
             comb = (t_feat + i_feat) / 2.0
             comb = F.normalize(comb, p=2, dim=1).detach().cpu().float().numpy()
             new_embs.append(comb)
@@ -470,9 +475,9 @@ def retrieval_siglip_it2it(queries, query_ids, documents, doc_ids, task, model_i
 
         inputs = processor(text=batch_q, images=imgs, return_tensors="pt",
                            padding="max_length", truncation=True).to(device)
-        t_feat = model.get_text_features(input_ids=inputs["input_ids"],
-                                         attention_mask=inputs.get("attention_mask", None))
-        i_feat = model.get_image_features(pixel_values=inputs["pixel_values"])
+        t_feat = pooled_features(model.get_text_features(input_ids=inputs["input_ids"],
+                                         attention_mask=inputs.get("attention_mask", None)))
+        i_feat = pooled_features(model.get_image_features(pixel_values=inputs["pixel_values"]))
         comb = (t_feat + i_feat) / 2.0
         comb = F.normalize(comb, p=2, dim=1).detach().cpu()
         q_embs.append(comb)

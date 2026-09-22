@@ -14,14 +14,19 @@ from tqdm import tqdm, trange
 from PIL import Image
 from sklearn.metrics.pairwise import cosine_similarity
 from src.caching import SmartCache
-from src.utils import cut_text, add_instruct_concatenate, last_token_pool
+from src.utils import cut_text, add_instruct_concatenate, last_token_pool, pooled_features
 
 # Add this to your retrievers.py file
 
 from PIL import Image
 import requests
 from io import BytesIO
-import clip  # pip install git+https://github.com/openai/CLIP.git
+try:
+    import clip  # pip install git+https://github.com/openai/CLIP.git
+except ImportError:
+    # Only the open_clip-based retrievers need it; importing the package
+    # must not require it.
+    clip = None
 
 @torch.no_grad()
 def retrieval_clip(queries, query_ids, documents, doc_ids, task, model_id, instructions, cache_dir, excluded_ids, long_context, **kwargs):
@@ -54,7 +59,7 @@ def retrieval_clip(queries, query_ids, documents, doc_ids, task, model_id, instr
             inputs = processor(text=batch_texts, return_tensors="pt", padding=True, truncation=True, max_length=77)
             inputs = {k: v.to('cuda') for k, v in inputs.items()}
             
-            outputs = model.get_text_features(**inputs)
+            outputs = pooled_features(model.get_text_features(**inputs))
             embeddings = F.normalize(outputs, p=2, dim=1).cpu().numpy()
             new_embeddings.append(embeddings)
         
@@ -107,8 +112,8 @@ def retrieval_clip(queries, query_ids, documents, doc_ids, task, model_id, instr
         inputs = {k: v.to('cuda') for k, v in inputs.items()}
         
         # Get combined text and image features
-        text_features = model.get_text_features(input_ids=inputs['input_ids'], attention_mask=inputs['attention_mask'])
-        image_features = model.get_image_features(pixel_values=inputs['pixel_values'])
+        text_features = pooled_features(model.get_text_features(input_ids=inputs['input_ids'], attention_mask=inputs['attention_mask']))
+        image_features = pooled_features(model.get_image_features(pixel_values=inputs['pixel_values']))
         
         # Combine features (average fusion)
         combined_features = (text_features + image_features) / 2
@@ -156,7 +161,7 @@ def retrieval_siglip(queries, query_ids, documents, doc_ids, task, model_id, ins
             inputs = processor(text=batch_texts, return_tensors="pt", padding="max_length", truncation=True)
             inputs = {k: v.to('cuda') for k, v in inputs.items()}
             
-            outputs = model.get_text_features(**inputs)
+            outputs = pooled_features(model.get_text_features(**inputs))
             embeddings = F.normalize(outputs, p=2, dim=1).cpu().numpy()
             new_embeddings.append(embeddings)
         
@@ -208,8 +213,8 @@ def retrieval_siglip(queries, query_ids, documents, doc_ids, task, model_id, ins
         )
         inputs = {k: v.to('cuda') for k, v in inputs.items()}
         
-        text_features = model.get_text_features(input_ids=inputs['input_ids']) #, attention_mask=inputs['attention_mask']
-        image_features = model.get_image_features(pixel_values=inputs['pixel_values'])
+        text_features = pooled_features(model.get_text_features(input_ids=inputs['input_ids'])) #, attention_mask=inputs['attention_mask']
+        image_features = pooled_features(model.get_image_features(pixel_values=inputs['pixel_values']))
         
         # Weighted fusion (you can adjust weights)
         combined_features = 0.5 * text_features + 0.5 * image_features

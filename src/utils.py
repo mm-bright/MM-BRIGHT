@@ -19,12 +19,26 @@ def is_readable_image(p: Path) -> bool:
     except (UnidentifiedImageError, OSError, ValueError):
         return False
 
-def base_key_from_passage_id(passage_id: str) -> str:
+def base_key_from_passage_id(passage_id: str, legacy: bool = False) -> str:
     """
-    Extract base key from passage ID.
-    Example: "academia/a7beca61_6123.txt" -> "a7beca61"
+    Extract base key (source-document hash) from a passage ID.
+
+    Corpus IDs come in two shapes:
+        "academia/a7beca61_6123.txt"     -> "a7beca61"   (one passage per source)
+        "biology/fec40b40_1635_4.txt"    -> "fec40b40"   (source split into chunks)
+
+    The leading hash is the join key against image paths, which encode the same
+    hash (see base_key_from_image_rel). Only Biology uses the chunked form.
+
+    legacy=True restores the pre-fix regex, which required exactly one numeric
+    segment and therefore never matched a chunked ID. It exists solely to
+    reproduce the numbers published in Tables 5-6 and should not be used
+    for new evaluation. See README, "Evaluation protocol".
     """
-    m = re.search(r"/([0-9a-f]+)_\d+\.txt$", passage_id)
+    if legacy:
+        m = re.search(r"/([0-9a-f]+)_\d+\.txt$", passage_id)
+        return m.group(1) if m else passage_id
+    m = re.search(r"/([0-9a-f]+)_", passage_id)
     return m.group(1) if m else passage_id
 
 def base_key_from_image_rel(image_rel: str, domain: str) -> str:
@@ -35,6 +49,34 @@ def base_key_from_image_rel(image_rel: str, domain: str) -> str:
     # Includes domain prefix matching to be strict
     m = re.search(rf"{re.escape(domain)}_([0-9a-f]+)_\d+", image_rel)
     return m.group(1) if m else ""
+
+def pooled_features(out):
+    """
+    Normalise the return value of CLIP/SigLIP `get_text_features` and
+    `get_image_features` to a plain tensor.
+
+    transformers < 5 returns the embedding tensor directly. transformers >= 5
+    returns a BaseModelOutputWithPooling instead, carrying the embedding in
+    `pooler_output` (CLIP applies its projection to that field before
+    returning; SigLIP pools without a projection). Without this shim the
+    retrievers raise
+        TypeError: unsupported operand type(s) for +:
+        'BaseModelOutputWithPooling' and 'BaseModelOutputWithPooling'
+    on any recent transformers.
+
+    An output object with no `pooler_output` raises rather than falling back to
+    `last_hidden_state`, which would silently substitute an unprojected vector
+    and change every score.
+    """
+    if hasattr(out, "pooler_output"):
+        return out.pooler_output
+    if hasattr(out, "last_hidden_state"):
+        raise TypeError(
+            "get_*_features returned an output object without 'pooler_output'; "
+            "refusing to guess which field holds the embedding. "
+            "Check the installed transformers version."
+        )
+    return out
 
 def cut_text(text, tokenizer, threshold):
     """Truncate text to threshold tokens."""
