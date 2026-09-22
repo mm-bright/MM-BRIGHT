@@ -148,6 +148,38 @@ class DataLoader:
             traceback.print_exc()
             return [], [], {}, {}, {}
 
+    def _load_images_parquet(self, config_name, domain):
+        """
+        Read one image config's parquet directly and decode it.
+
+        Deliberately uses hf_hub_download + pandas rather than load_dataset:
+        load_dataset builds an Arrow cache under a shared directory that is not
+        safe to write from several processes at once, so running one job per
+        model over the same domain could leave a half-written '.incomplete'
+        directory and make every later read fail. hf_hub_download locks per
+        file, so concurrent readers are safe.
+
+        Returns: dict[path] -> PIL.Image
+        """
+        import pandas as pd
+        from huggingface_hub import hf_hub_download
+
+        parquet_path = hf_hub_download(
+            repo_id=self.dataset_name,
+            filename=f"{config_name}/{domain}.parquet",
+            repo_type="dataset",
+        )
+        df = pd.read_parquet(parquet_path)
+
+        images_map = {}
+        for path, img_bytes in tqdm(zip(df['path'], df['bytes']), total=len(df),
+                                    desc=f"Decoding {domain} {config_name}"):
+            try:
+                images_map[str(path)] = Image.open(io.BytesIO(img_bytes)).convert('RGB')
+            except Exception as e:
+                print(f"Warning: Could not decode image {path}: {e}")
+        return images_map
+
     def load_corpus_images(self, domain):
         """
         Load corpus/document images from HF 'document_images' config.
@@ -155,19 +187,7 @@ class DataLoader:
         """
         print(f"Loading {domain} document images from HF...")
         try:
-            ds = load_dataset(self.dataset_name, "document_images", split=domain, trust_remote_code=True)
-            
-            images_map = {}
-            for row in tqdm(ds, desc=f"Decoding {domain} document images"):
-                path = row['path']
-                img_bytes = row['bytes']
-                try:
-                    img = Image.open(io.BytesIO(img_bytes)).convert('RGB')
-                    images_map[path] = img
-                except Exception as e:
-                    print(f"Warning: Could not decode image {path}: {e}")
-                    
-            return images_map
+            return self._load_images_parquet("document_images", domain)
         except Exception as e:
             print(f"Error loading document images for {domain}: {e}")
             import traceback
@@ -181,19 +201,7 @@ class DataLoader:
         """
         print(f"Loading {domain} query images from HF...")
         try:
-            ds = load_dataset(self.dataset_name, "examples_images", split=domain, trust_remote_code=True)
-            
-            images_map = {}
-            for row in tqdm(ds, desc=f"Decoding {domain} query images"):
-                path = row['path']
-                img_bytes = row['bytes']
-                try:
-                    img = Image.open(io.BytesIO(img_bytes)).convert('RGB')
-                    images_map[path] = img
-                except Exception as e:
-                    print(f"Warning: Could not decode image {path}: {e}")
-                    
-            return images_map
+            return self._load_images_parquet("examples_images", domain)
         except Exception as e:
             print(f"Error loading query images for {domain}: {e}")
             import traceback
