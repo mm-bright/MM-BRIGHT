@@ -9,14 +9,19 @@ from tqdm import tqdm, trange
 from PIL import Image
 from sklearn.metrics.pairwise import cosine_similarity
 from src.caching import SmartCache
-from src.utils import cut_text, add_instruct_concatenate, last_token_pool, safe_image_path, ensure_blank
+from src.utils import cut_text, add_instruct_concatenate, last_token_pool, safe_image_path, ensure_blank, pooled_features
 
 # Add this to your retrievers.py file
 
 from PIL import Image
 import requests
 from io import BytesIO
-import clip  # pip install git+https://github.com/openai/CLIP.git
+try:
+    import clip  # pip install git+https://github.com/openai/CLIP.git
+except ImportError:
+    # Only the open_clip-based retrievers need it; importing the package
+    # must not require it.
+    clip = None
 
 def _to_numpy(x):
     if isinstance(x, np.ndarray):
@@ -222,7 +227,7 @@ def retrieval_clip_it2i(queries, query_ids, documents, doc_ids, task, model_id, 
                 inputs = processor(images=fixed, return_tensors="pt")
 
             inputs = {k: v.to(device) for k, v in inputs.items()}
-            feats = model.get_image_features(**inputs)
+            feats = pooled_features(model.get_image_features(**inputs))
             feats = F.normalize(feats, p=2, dim=1)
 
             new_embs.append(feats.detach().cpu().numpy())
@@ -276,8 +281,8 @@ def retrieval_clip_it2i(queries, query_ids, documents, doc_ids, task, model_id, 
             inputs = processor(text=texts, images=fixed, return_tensors="pt", padding=True, truncation=True)
 
         inputs = {k: v.to(device) for k, v in inputs.items()}
-        tfeat = model.get_text_features(input_ids=inputs["input_ids"], attention_mask=inputs["attention_mask"])
-        ifeat = model.get_image_features(pixel_values=inputs["pixel_values"])
+        tfeat = pooled_features(model.get_text_features(input_ids=inputs["input_ids"], attention_mask=inputs["attention_mask"]))
+        ifeat = pooled_features(model.get_image_features(pixel_values=inputs["pixel_values"]))
         fused = (tfeat + ifeat) / 2.0
         fused = F.normalize(fused, p=2, dim=1)
         q_embs.append(fused.detach().cpu().numpy())
@@ -388,7 +393,7 @@ def retrieval_siglip_it2i(queries, query_ids, documents, doc_ids, task, model_id
 
             inputs = {k: v.to(device) for k, v in inputs.items()}
             if hasattr(model, "get_image_features"):
-                feats = model.get_image_features(**inputs)
+                feats = pooled_features(model.get_image_features(**inputs))
             else:
                 feats = model(**inputs).image_embeds
             feats = F.normalize(feats, p=2, dim=1)
@@ -440,12 +445,12 @@ def retrieval_siglip_it2i(queries, query_ids, documents, doc_ids, task, model_id
         inputs = {k: v.to(device) for k, v in inputs.items()}
 
         if hasattr(model, "get_text_features"):
-            tfeat = model.get_text_features(input_ids=inputs["input_ids"], attention_mask=inputs.get("attention_mask", None))
+            tfeat = pooled_features(model.get_text_features(input_ids=inputs["input_ids"], attention_mask=inputs.get("attention_mask", None)))
         else:
             tfeat = model(**{k: inputs[k] for k in ["input_ids", "attention_mask"] if k in inputs}).text_embeds
 
         if hasattr(model, "get_image_features"):
-            ifeat = model.get_image_features(pixel_values=inputs["pixel_values"])
+            ifeat = pooled_features(model.get_image_features(pixel_values=inputs["pixel_values"]))
         else:
             ifeat = model(**{k: inputs[k] for k in ["pixel_values"] if k in inputs}).image_embeds
 

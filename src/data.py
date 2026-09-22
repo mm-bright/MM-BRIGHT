@@ -252,42 +252,49 @@ class DataLoader:
              
         return image_ids, image_paths
 
-    def build_it_it_pairs(self, passage_ids, passage_texts, corpus_images_map, domain):
+    def build_it_it_pairs(self, passage_ids, passage_texts, corpus_images_map, domain, legacy_keys=False):
         """
         Build (text, image) pairs for Task 4 (IT→IT retrieval).
-        
+
+        Every passage yields a text-only "__NO_IMAGE__" pair, plus one pair per
+        image belonging to the same source document.
+
         Args:
             passage_ids: list of document IDs
             passage_texts: list of document texts
             corpus_images_map: dict[path] -> PIL.Image (from load_corpus_images)
             domain: domain name
-            
-        Returns: pair_ids, pair_texts, pair_images (PIL or None), base_to_imgs dict
+            legacy_keys: use the pre-fix passage-key parser (Tables 5-6 repro only)
+
+        Returns: pair_ids, pair_texts, pair_images (PIL or None),
+                 base_to_imgs, base_to_passage_ids
         """
         from .utils import base_key_from_passage_id, base_key_from_image_rel
-        
+
         # Index images by base key (extracted from path)
         base_to_imgs = {}
         for img_path in corpus_images_map.keys():
             bk = base_key_from_image_rel(img_path, domain)
             if bk:
                 base_to_imgs.setdefault(bk, []).append(img_path)
-        
+
         # Build pairs
         pair_ids, pair_texts, pair_images = [], [], []
-        
+        base_to_passage_ids = {}
+
         for pid, txt in zip(passage_ids, passage_texts):
             # NO_IMAGE pair (text-only)
             pair_ids.append(f"{pid}|||__NO_IMAGE__")
             pair_texts.append(txt)
             pair_images.append(None)
-            
+
             # Image pairs
-            bk = base_key_from_passage_id(pid)
+            bk = base_key_from_passage_id(pid, legacy=legacy_keys)
+            base_to_passage_ids.setdefault(bk, []).append(pid)
             for img_path in base_to_imgs.get(bk, []):
                 if img_path in corpus_images_map:
                     pair_ids.append(f"{pid}|||{img_path}")
                     pair_texts.append(txt)
                     pair_images.append(corpus_images_map[img_path])
-                     
-        return pair_ids, pair_texts, pair_images, base_to_imgs
+
+        return pair_ids, pair_texts, pair_images, base_to_imgs, base_to_passage_ids

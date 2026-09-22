@@ -51,6 +51,14 @@ class EvaluationRunner:
         self.parser.add_argument('--chunk_size', type=int, default=50000)
         self.parser.add_argument('--topk', type=int, default=1000)
 
+        # Evaluation protocol. 'paper' implements the protocol described in the
+        # paper (graded relevance, chunk-aware passage keys). 'legacy' reproduces
+        # the scripts that generated Tables 5-6, including the passage-key bug
+        # that suppressed every image pair in Biology; audit use only.
+        self.parser.add_argument('--protocol', type=str, default='paper',
+                                 choices=['paper', 'legacy'],
+                                 help="Evaluation protocol: 'paper' (default) or 'legacy' (Tables 5-6 repro)")
+
 
     def run(self):
         args = self.parser.parse_args()
@@ -88,6 +96,109 @@ class EvaluationRunner:
                 traceback.print_exc()
         
         self._save_summary(all_domain_results, args, final_output_dir)
+
+    def _build_task4_qrels(self, query_ids, gold_ids_map, positive_images_map,
+                           negative_images_map, doc_ids, documents, doc_images,
+                           passage_id_to_text, base_to_passage_ids,
+                           corpus_images_map, domain, legacy_keys):
+        """
+        Build graded Task 4 qrels, extend the candidate pool with any positive
+        pair missing from it, and expand negative image annotations into
+        pair-level exclusions.
+
+        Grading, as specified in the paper:
+            rel=2  gold passage paired with an annotated positive image
+            rel=1  gold passage paired with __NO_IMAGE__ (its text-only variant)
+            rel=0  everything else, including a gold passage paired with an
+                   image that is present but not annotated positive
+
+        A pair formed from a negatively annotated image is removed from the
+        ranking rather than scored 0. Where an image is annotated both positive
+        and negative for the same query, the positive wins.
+
+        Returns: qrels, doc_ids, documents, doc_images, excluded_pairs
+        """
+        from .utils import base_key_from_passage_id, base_key_from_image_rel
+
+        pair_id_set = set(str(d) for d in doc_ids)
+        qrels, excluded_pairs = {}, {}
+        added_pairs = 0
+        orphan_positives = 0
+        unavailable_positives = 0
+
+        def _paths(mapping, qid):
+            return [str(p).replace("\\", "/") for p in (mapping.get(qid) or [])]
+
+        for qid in query_ids:
+            gt = {}
+            gold_ids = [str(g) for g in gold_ids_map.get(qid, [])]
+
+            # rel=1 : the text-only variant of each gold passage
+            for gold_pid in gold_ids:
+                no_img = f"{gold_pid}|||__NO_IMAGE__"
+                gt[no_img] = 1
+                if no_img not in pair_id_set and gold_pid in passage_id_to_text:
+                    doc_ids.append(no_img)
+                    documents.append(passage_id_to_text[gold_pid])
+                    doc_images.append(None)
+                    pair_id_set.add(no_img)
+                    added_pairs += 1
+
+            positives = _paths(positive_images_map, qid)
+            pos_set = set(positives)
+            negatives = [n for n in _paths(negative_images_map, qid) if n not in pos_set]
+
+            # rel=2 : gold passage paired with an annotated positive image
+            for img_rel in positives:
+                bk = base_key_from_image_rel(img_rel, domain)
+                if not bk:
+                    continue
+                matched_gold = [g for g in gold_ids
+                                if base_key_from_passage_id(g, legacy=legacy_keys) == bk]
+                if not matched_gold:
+                    # A positive image whose source document contributes no gold
+                    # passage to this query. Counted and reported rather than
+                    # dropped silently -- see README, "Known data issues".
+                    orphan_positives += 1
+                    continue
+                if img_rel not in corpus_images_map:
+                    unavailable_positives += 1
+                    continue
+                for gold_pid in matched_gold:
+                    pair_id = f"{gold_pid}|||{img_rel}"
+                    gt[pair_id] = 2
+                    if pair_id not in pair_id_set and gold_pid in passage_id_to_text:
+                        doc_ids.append(pair_id)
+                        documents.append(passage_id_to_text[gold_pid])
+                        doc_images.append(corpus_images_map[img_rel])
+                        pair_id_set.add(pair_id)
+                        added_pairs += 1
+
+            qrels[str(qid)] = gt
+
+            # Exclusions: every pair built from a negatively annotated image.
+            excl = []
+            for neg_img_rel in negatives:
+                bk = base_key_from_image_rel(neg_img_rel, domain)
+                if not bk:
+                    continue
+                for pid in base_to_passage_ids.get(bk, []):
+                    excl.append(f"{pid}|||{neg_img_rel}")
+            excluded_pairs[str(qid)] = [x for x in excl if x not in gt]
+
+        n_rel2 = sum(1 for g in qrels.values() for v in g.values() if v == 2)
+        n_rel1 = sum(1 for g in qrels.values() for v in g.values() if v == 1)
+        print(f"  Task 4 qrels: {n_rel2} rel=2, {n_rel1} rel=1 "
+              f"over {len(qrels)} queries ({'legacy' if legacy_keys else 'paper'} protocol)")
+        if added_pairs:
+            print(f"  Added {added_pairs} qrel pairs missing from the generated corpus")
+        if orphan_positives:
+            print(f"  ⚠️  {orphan_positives} positive images have no gold passage from "
+                  f"the same source document and were not scored")
+        if unavailable_positives:
+            print(f"  ⚠️  {unavailable_positives} positive images are unavailable in the corpus")
+
+        return qrels, doc_ids, documents, doc_images, excluded_pairs
 
     def _load_config(self, args):
         config = {'instructions': {'query': '', 'document': ''}}
@@ -171,10 +282,13 @@ class EvaluationRunner:
             corpus_images_map = loader.load_corpus_images(domain)
             
             # Build pairs (text, image)
-            doc_ids, documents, doc_images, _ = loader.build_it_it_pairs(p_doc_ids, p_docs, corpus_images_map, domain)
-             
-            # Load Queries
-            queries, query_ids, gold_ids_map, excluded_ids, query_images_map, _, _ = loader.load_queries(domain, "examples_multimodal")
+            legacy_keys = (args.protocol == 'legacy')
+            doc_ids, documents, doc_images, _, base_to_passage_ids = loader.build_it_it_pairs(
+                p_doc_ids, p_docs, corpus_images_map, domain, legacy_keys=legacy_keys)
+            passage_id_to_text = dict(zip(p_doc_ids, p_docs))
+
+            # Load Queries. positive/negative images drive the graded qrels below.
+            queries, query_ids, gold_ids_map, excluded_ids, query_images_map, positive_images_map, negative_images_map, = loader.load_queries(domain, "examples_multimodal")
             
             # Load query images from HF
             query_images_data = loader.load_query_images(domain)
@@ -192,8 +306,29 @@ class EvaluationRunner:
             if self.task_type == 'text_pair':
                  doc_images = doc_images[:30]
 
-        # 3. Validation / Qrel building
-        # ...
+        # 3. Qrel building
+        #
+        # Task 4 qrels have to be built BEFORE retrieval, not after: a positive
+        # (passage, image) pair may be absent from the generated pair corpus, and
+        # it must be inserted into the candidate pool so the model actually scores
+        # it. Building qrels afterwards would leave such pairs permanently
+        # unranked. The other tasks build their qrels after retrieval, in step 5.
+        prebuilt_qrels = None
+        if self.task_type == 'text_pair':
+            prebuilt_qrels, doc_ids, documents, doc_images, excluded_ids = self._build_task4_qrels(
+                query_ids=query_ids,
+                gold_ids_map=gold_ids_map,
+                positive_images_map=positive_images_map,
+                negative_images_map=negative_images_map,
+                doc_ids=doc_ids,
+                documents=documents,
+                doc_images=doc_images,
+                passage_id_to_text=passage_id_to_text,
+                base_to_passage_ids=base_to_passage_ids,
+                corpus_images_map=corpus_images_map,
+                domain=domain,
+                legacy_keys=(args.protocol == 'legacy'),
+            )
 
         # 4. Run Retrieval
         domain_out = os.path.join(final_output_dir, domain)
@@ -238,34 +373,19 @@ class EvaluationRunner:
         # This is strictly dependent on the map (gold_ids for T1/2/4, pos_imgs for T3)
         # Simple generic qrel builder:
         qrels = {}
-        
-        # For Task 4 (text_pair), doc_ids have format "base_id|||..." but gold_ids are just "base_id"
-        # Build a mapping from base_id -> all matching doc_ids
+
         if self.task_type == 'text_pair':
-            base_to_doc_ids = {}
-            for did in doc_ids:
-                did_str = str(did)
-                if '|||' in did_str:
-                    base_id = did_str.split('|||')[0]
-                else:
-                    base_id = did_str
-                base_to_doc_ids.setdefault(base_id, []).append(did_str)
-        
-        for qid in query_ids:
+            # Built before retrieval so that positive pairs missing from the
+            # generated corpus could be added to the candidate pool. Graded:
+            # rel=2 gold+positive image, rel=1 gold+__NO_IMAGE__, rel=0 otherwise.
+            qrels = prebuilt_qrels
+
+        for qid in (query_ids if self.task_type != 'text_pair' else []):
             qrels[str(qid)] = {}
-            # Prefer gold_ids if T1/2/4
+            # Prefer gold_ids if T1/2
             if self.task_type in ['text_text', 'multimodal_text']:
                 for gid in gold_ids_map.get(qid, []):
                     qrels[str(qid)][str(gid)] = 1
-            elif self.task_type == 'text_pair':
-                # For Task 4: map gold_id (base) to all matching doc_ids (with ||| suffix)
-                for gid in gold_ids_map.get(qid, []):
-                    matching_doc_ids = base_to_doc_ids.get(str(gid), [])
-                    for did in matching_doc_ids:
-                        qrels[str(qid)][did] = 1
-                    # Also add the base ID in case it exists directly
-                    if str(gid) in [str(d) for d in doc_ids]:
-                        qrels[str(qid)][str(gid)] = 1
             else: # T3 - uses positive_images (image IDs for image retrieval)
                  # positive_images_map contains the correct image IDs for Task 3
                  if 'positive_images_map' in locals() and positive_images_map:

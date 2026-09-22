@@ -195,6 +195,83 @@ python run_task3.py --dataset_dir . --model clip --domains academia biology
 python run_task4.py --dataset_dir . --model clip --domains academia biology
 ```
 
+---
+
+## 📐 Evaluation protocol
+
+### Task 4 relevance is graded
+
+Each Task 4 candidate is a `(passage, image)` pair, written `passage_id|||image_path`.
+Every passage also yields a text-only pair, `passage_id|||__NO_IMAGE__`.
+
+| Relevance | Candidate |
+|---|---|
+| `rel=2` | gold passage paired with an image annotated **positive** for that query |
+| `rel=1` | gold passage paired with `__NO_IMAGE__` (its text-only variant) |
+| `rel=0` | everything else, including a gold passage paired with an image that exists but is not annotated positive |
+
+Pairs built from an image annotated **negative** are *excluded from the ranking*
+rather than scored `0`. If an image is annotated both positive and negative for
+the same query, the positive wins.
+
+Qrels are built **before** retrieval, and any positive pair missing from the
+generated pair corpus is inserted into the candidate pool, so it can actually be
+scored.
+
+### Passage IDs and the `--protocol` flag
+
+Passage IDs take two shapes:
+
+```
+academia/a7beca61_6123.txt      # one passage per source document
+biology/fec40b40_1635_4.txt     # source document split into chunks
+```
+
+The leading hash is the join key linking a passage to its images. **Biology is the
+only domain using the chunked form.**
+
+```bash
+python run_task4.py --dataset_dir . --model clip --protocol paper    # default
+python run_task4.py --dataset_dir . --model clip --protocol legacy   # audit only
+```
+
+- `--protocol paper` (default) implements the protocol above.
+- `--protocol legacy` reproduces the scripts that generated Tables 5–6 of the
+  paper, **including a passage-key bug** that made the parser unable to read
+  chunked IDs. Use it only to audit published numbers, never to evaluate a
+  new method.
+
+### Reproducing the published tables
+
+Tables 5 and 6 were produced in December 2025 by standalone scripts, not by this
+repository, and against a local copy of the corpus that is byte-identical to the
+`documents` config published here. Under `--protocol legacy` this repository
+reproduces those numbers exactly; `validate_reproduction.py` checks this by
+replaying the stored per-domain scores through freshly built qrels.
+
+**Table 6's Biology column is affected by the legacy parser bug.** Because every
+Biology gold ID is chunked, no positive image was ever matched to a gold passage,
+`rel=2` was empty, and Task 4 in that domain reduced to text-only retrieval. Under
+`--protocol paper` the Biology candidate pool grows from 50 image pairs to 27,998
+and the numbers change. The other 28 domains are unaffected: none of their chunked
+passages come from a source that has images, so both protocols yield an identical
+candidate pool.
+
+### Known data issues
+
+- **199 orphaned positive images (28 Biology queries).** Some positive-image
+  annotations belong to a source document that contributes no gold passage to
+  that query; a few have all their source's chunks listed in `negative_ids`.
+  These arose because Biology gold passages were re-chunked *after* image
+  annotation, without re-anchoring the images. The evaluator reports them rather
+  than dropping them silently, but they are still not scored.
+- **Query images.** All shipped retrievers encode only the *first* query image.
+  Multi-image queries are therefore evaluated on their first image alone.
+- **Text-only candidates.** `__NO_IMAGE__` candidates are encoded by averaging the
+  text embedding with the embedding of a blank white image, not as a true
+  text-only embedding. This is a property of the baseline implementations, not of
+  the benchmark.
+
 ### Run All Experiments
 
 Use the experiment runner to evaluate all models across all domains:
@@ -258,7 +335,13 @@ MM-BRIGHT/
 If you use MM-BRIGHT in your work, please cite our paper:
 
 ```bibtex
-soon
+@inproceedings{abdallah2026mm,
+  title={Mm-bright: A multi-task multimodal benchmark for reasoning-intensive retrieval},
+  author={Abdallah, Abdelrahman and Mounis, Mohamed Darwish and Abdalla, Mahmoud and Kasem, Mahmoud SalahEldin and Senussi, Mostafa Farouk and Mahmoud, Mohamed and Ali, Mohammed and Jatowt, Adam and Kang, Hyun Soo},
+  booktitle={Proceedings of the 32nd ACM SIGKDD Conference on Knowledge Discovery and Data Mining V. 2},
+  pages={8604--8612},
+  year={2026}
+}
 ```
 
 ---
