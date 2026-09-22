@@ -280,7 +280,21 @@ class EvaluationRunner:
             
             # Load Corpus Images from HF
             corpus_images_map = loader.load_corpus_images(domain)
-            
+
+            # Task 4 retrieves (text, image) pairs, so an empty image corpus means
+            # every candidate collapses to its text-only variant and the run is
+            # meaningless. load_corpus_images() swallows its errors and returns {},
+            # which previously let such a run finish and report plausible-looking
+            # numbers. Fail loudly instead -- this is usually a corrupted or
+            # concurrently-written HuggingFace cache.
+            if not corpus_images_map:
+                raise RuntimeError(
+                    f"No document images loaded for '{domain}'. Task 4 cannot be "
+                    f"evaluated without them. Check the HuggingFace cache for a "
+                    f"stale '.incomplete' directory, and avoid downloading the same "
+                    f"config from several processes at once."
+                )
+
             # Build pairs (text, image)
             legacy_keys = (args.protocol == 'legacy')
             doc_ids, documents, doc_images, _, base_to_passage_ids = loader.build_it_it_pairs(

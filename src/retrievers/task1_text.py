@@ -1199,12 +1199,15 @@ def calculate_retrieval_metrics(results, qrels, k_values=[1, 5, 10, 25, 50, 100]
 
 
 
-from vllm.transformers_utils.tokenizer import get_tokenizer as get_vllm_tokenizer
 class VQwen3EmbeddingModel:
     def __init__(self, model_path, max_length=16384, device="auto"):
         self.model = LLM(model=model_path, task="embed", gpu_memory_utilization=0.9, tensor_parallel_size=torch.cuda.device_count())
         self.task = 'Given a web search query, retrieve relevant passages that answer the query'
         self.max_length = max_length 
+        # Imported lazily: vllm pulls in a large dependency tree and pins a
+        # transformers version, so importing it at module scope made the whole
+        # retrievers package unimportable for anyone not using this model.
+        from vllm.transformers_utils.tokenizer import get_tokenizer as get_vllm_tokenizer
         self.tokenizer = get_vllm_tokenizer(model_path, trust_remote_code=False)
 
     def truncate_text(self, text):
